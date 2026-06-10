@@ -1,0 +1,32 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- 文件说明：这个 XML 文件用来编写电子书的 MyBatis 自定义 SQL。 -->
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN" "https://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="com.shiwangsi.oceanwiki.mapper.EbookMapper">
+
+    <!--
+        根据 doc 表刷新 ebook 表统计字段。
+        左连接可以保证“还没有文档的电子书”也会被更新成 0。
+    -->
+    <update id="refreshEbookInfo">
+        UPDATE ebook e
+        LEFT JOIN (
+            SELECT
+                ebook_id,
+                COUNT(1) AS doc_count,
+                IFNULL(SUM(view_count), 0) AS view_count,
+                IFNULL(SUM(vote_count), 0) AS vote_count
+            FROM doc
+            WHERE status = 'published'
+              AND NOT EXISTS (
+                  SELECT 1
+                  FROM doc child
+                  WHERE child.parent = doc.id
+              )
+            GROUP BY ebook_id
+        ) d ON e.id = d.ebook_id
+        SET
+            e.doc_count = IFNULL(d.doc_count, 0),
+            e.view_count = IFNULL(d.view_count, 0),
+            e.vote_count = IFNULL(d.vote_count, 0)
+    </update>
+</mapper>

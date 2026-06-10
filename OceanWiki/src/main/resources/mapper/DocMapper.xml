@@ -1,0 +1,26 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- 文件说明：这个 XML 文件用来编写文档的 MyBatis 自定义 SQL。 -->
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN" "https://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="com.shiwangsi.oceanwiki.mapper.DocMapper">
+
+    <!-- 打开文档正文时，阅读数加 1 -->
+    <update id="increaseViewCount">
+        UPDATE doc
+        SET view_count = IFNULL(view_count, 0) + 1
+        WHERE id = #{id}
+    </update>
+
+    <!-- 点击点赞按钮时，点赞数加 1 -->
+    <update id="increaseVoteCount">
+        UPDATE doc
+        SET vote_count = IFNULL(vote_count, 0) + 1
+        WHERE id = #{id}
+    </update>
+
+    <!-- 取消点赞时，点赞数减 1，GREATEST 用来防止出现负数 -->
+    <update id="decreaseVoteCount">
+        UPDATE doc
+        SET vote_count = GREATEST(IFNULL(vote_count, 0) - 1, 0)
+        WHERE id = #{id}
+    </update>
+</mapper>

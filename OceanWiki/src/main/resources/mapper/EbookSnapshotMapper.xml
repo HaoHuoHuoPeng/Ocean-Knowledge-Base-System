@@ -1,0 +1,57 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- 文件说明：这个 XML 文件用来编写统计快照的 MyBatis 自定义 SQL。 -->
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN" "https://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="com.shiwangsi.oceanwiki.mapper.EbookSnapshotMapper">
+
+    <!-- 保存或更新当天快照，解决多个统计请求同时生成快照时的唯一键冲突 -->
+    <insert id="upsertSnapshot">
+        INSERT INTO ebook_snapshot (
+            id,
+            ebook_id,
+            `date`,
+            view_count,
+            vote_count,
+            view_increase,
+            vote_increase
+        )
+        VALUES (
+            #{snapshot.id},
+            #{snapshot.ebookId},
+            #{snapshot.date},
+            #{snapshot.viewCount},
+            #{snapshot.voteCount},
+            #{snapshot.viewIncrease},
+            #{snapshot.voteIncrease}
+        )
+        ON DUPLICATE KEY UPDATE
+            view_count = VALUES(view_count),
+            vote_count = VALUES(vote_count),
+            view_increase = VALUES(view_increase),
+            vote_increase = VALUES(vote_increase)
+    </insert>
+
+    <!-- 首页统计总览 -->
+    <select id="getStatistic" resultType="map">
+        SELECT
+            IFNULL(SUM(view_count), 0) AS viewCount,
+            IFNULL(SUM(vote_count), 0) AS voteCount,
+            GREATEST(IFNULL(SUM(view_increase), 0), 0) AS todayViewCount,
+            GREATEST(IFNULL(SUM(vote_increase), 0), 0) AS todayVoteCount
+        FROM ebook_snapshot
+        WHERE `date` = CURDATE()
+    </select>
+
+    <!-- 最近 30 天统计趋势 -->
+    <select id="get30Statistic" resultType="map">
+        SELECT
+            `date`,
+            IFNULL(SUM(view_count), 0) AS viewCount,
+            IFNULL(SUM(vote_count), 0) AS voteCount,
+            GREATEST(IFNULL(SUM(view_increase), 0), 0) AS viewIncrease,
+            GREATEST(IFNULL(SUM(vote_increase), 0), 0) AS voteIncrease
+        FROM ebook_snapshot
+        WHERE `date` &gt;= DATE_SUB(CURDATE(), INTERVAL 29 DAY)
+        GROUP BY `date`
+        ORDER BY `date`
+    </select>
+</mapper>
