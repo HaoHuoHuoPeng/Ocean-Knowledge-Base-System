@@ -16,7 +16,7 @@ import { message, Modal } from 'ant-design-vue'
 
 import http from '@/api/http'
 import WangEditor from '@/components/WangEditor.vue'
-import type { CommonResp, Doc, DocVersion, Ebook } from '@/types'
+import type { CommonResp, Doc, DocVersion, Ebook, IdValue, PageResp } from '@/types'
 import { hasPermission } from '@/utils/auth'
 import { normalizeEditorHtml } from '@/utils/html'
 import { arrayToTree } from '@/utils/tree'
@@ -31,11 +31,18 @@ interface DocRow extends Omit<Doc, 'children'> {
 
 const docs = ref<Doc[]>([])
 const displayDocs = ref<DocRow[]>([])
+const parentDocs = ref<Doc[]>([])
 const ebooks = ref<Ebook[]>([])
 const modalOpen = ref(false)
 const versionOpen = ref(false)
 const editLoading = ref(false)
 const keyword = ref('')
+const ebookKeyword = ref('')
+const selectedEbookId = ref<IdValue | undefined>()
+const selectedStatus = ref<string | undefined>()
+const current = ref(1)
+const pageSize = ref(10)
+const total = ref(0)
 const versions = ref<DocVersion[]>([])
 const currentVersionDoc = ref<Doc>()
 
@@ -85,12 +92,12 @@ const doc = ref<Doc>({
 
 const columns = [
   { title: '文档名称', dataIndex: 'name' },
-  { title: '电子书ID', dataIndex: 'ebookId', width: 110 },
-  { title: '父文档ID', dataIndex: 'parent', width: 110 },
-  { title: '状态', dataIndex: 'status', width: 100 },
+  { title: '电子书名称', dataIndex: 'ebookName', width: 180 },
+  { title: '父文档名称', dataIndex: 'parentName', width: 180 },
+  { title: '状态', dataIndex: 'status', width: 110 },
   { title: '阅读', dataIndex: 'viewCount', width: 90 },
   { title: '点赞', dataIndex: 'voteCount', width: 90 },
-  { title: '操作', dataIndex: 'action', width: 250 },
+  { title: '操作', dataIndex: 'action', width: 260 },
 ]
 
 // 生成文档目录序号
@@ -145,22 +152,95 @@ const buildParentDocOptions = (list: Doc[]): ParentDocOption[] => {
   ]
 }
 
-const parentDocOptions = computed(() => buildParentDocOptions(docs.value))
+const parentDocOptions = computed(() => buildParentDocOptions(parentDocs.value))
 
 const loadDocs = async () => {
-  const resp = await http.get<CommonResp<Doc[]>>('/doc/all', {
+  const resp = await http.get<CommonResp<PageResp<Doc>>>('/doc/pageTree', {
     params: {
+      // 当前页码，后端按顶层文档分页
+      current: current.value,
+      // 每页展示多少个顶层文档
+      pageSize: pageSize.value,
+      // 按所属电子书筛选，空着表示查全部电子书
+      ebookId: selectedEbookId.value || undefined,
       // 文档关键词，后端按文档名称模糊查询
       keyword: keyword.value.trim() || undefined,
+      // 电子书名称关键词，后端按电子书名称模糊查询后再筛选文档
+      ebookName: ebookKeyword.value.trim() || undefined,
+      // 管理员可按状态筛选，审核员后端会自动只看待审核投稿
+      status: selectedStatus.value || undefined,
     },
   })
-  docs.value = resp.data.content || []
+  docs.value = resp.data.content?.records || []
   displayDocs.value = buildDisplayDocs(docs.value)
+  total.value = resp.data.content?.total || 0
 }
 
 const resetSearch = async () => {
   keyword.value = ''
+  ebookKeyword.value = ''
+  selectedEbookId.value = undefined
+  selectedStatus.value = undefined
+  current.value = 1
   await loadDocs()
+}
+
+const searchDocs = async () => {
+  current.value = 1
+  await loadDocs()
+}
+
+const changePage = async (page: number, size: number) => {
+  current.value = page
+  pageSize.value = size
+  await loadDocs()
+}
+
+const loadParentDocs = async (ebookId?: IdValue) => {
+  if (!ebookId) {
+    parentDocs.value = []
+    return
+  }
+
+  const resp = await http.get<CommonResp<Doc[]>>('/doc/all', {
+    params: {
+      ebookId,
+    },
+  })
+  parentDocs.value = resp.data.content || []
+}
+
+const handleEditorEbookChange = async () => {
+  doc.value.parent = 0
+  await loadParentDocs(doc.value.ebookId)
+}
+
+const ebookName = (ebookId?: IdValue) => {
+  return ebooks.value.find((item) => String(item.id) === String(ebookId))?.name || '电子书已删除'
+}
+
+const findDocName = (list: DocRow[], id?: IdValue): string | undefined => {
+  if (!id) {
+    return undefined
+  }
+
+  for (const item of list) {
+    if (String(item.id) === String(id)) {
+      return item.name
+    }
+    const childName = findDocName(item.children || [], id)
+    if (childName) {
+      return childName
+    }
+  }
+  return undefined
+}
+
+const parentDocName = (record: DocRow) => {
+  if (!record.parent || String(record.parent) === '0') {
+    return '无父文档'
+  }
+  return findDocName(displayDocs.value, record.parent) || '父文档已删除'
 }
 
 const loadEbooks = async () => {
@@ -178,13 +258,14 @@ const loadEbooks = async () => {
 const add = () => {
   editLoading.value = false
   doc.value = {
-    ebookId: ebooks.value[0]?.id,
+    ebookId: selectedEbookId.value || ebooks.value[0]?.id,
     parent: 0,
     name: '',
     sort: 0,
     status: 'draft',
     content: '',
   }
+  loadParentDocs(doc.value.ebookId)
   modalOpen.value = true
 }
 
@@ -192,6 +273,7 @@ const edit = async (record: Doc) => {
   doc.value = { ...record, content: '' }
   modalOpen.value = true
   editLoading.value = true
+  await loadParentDocs(record.ebookId)
 
   // 编辑时先把正文查出来放进文本框
   try {
@@ -364,7 +446,7 @@ onMounted(async () => {
           allow-clear
           placeholder="按文档名称模糊搜索"
           style="width: 260px"
-          @search="loadDocs"
+          @search="searchDocs"
         >
           <template #enterButton>
             <a-button>
@@ -373,6 +455,47 @@ onMounted(async () => {
             </a-button>
           </template>
         </a-input-search>
+        <a-input-search
+          v-model:value="ebookKeyword"
+          allow-clear
+          placeholder="按电子书名称模糊搜索"
+          style="width: 260px"
+          @search="searchDocs"
+        >
+          <template #enterButton>
+            <a-button>
+              <SearchOutlined />
+              搜索
+            </a-button>
+          </template>
+        </a-input-search>
+        <a-select
+          v-model:value="selectedEbookId"
+          allow-clear
+          show-search
+          option-filter-prop="label"
+          placeholder="按电子书筛选"
+          style="width: 220px"
+          @change="searchDocs"
+        >
+          <a-select-option v-for="item in ebooks" :key="item.id" :value="item.id" :label="item.name">
+            {{ item.name }}
+          </a-select-option>
+        </a-select>
+        <a-select
+          v-if="!reviewOnly"
+          v-model:value="selectedStatus"
+          allow-clear
+          placeholder="按状态筛选"
+          style="width: 140px"
+          @change="searchDocs"
+        >
+          <a-select-option value="draft">草稿</a-select-option>
+          <a-select-option value="pending">待审核</a-select-option>
+          <a-select-option value="published">已发布</a-select-option>
+          <a-select-option value="rejected">已驳回</a-select-option>
+          <a-select-option value="offline">已下架</a-select-option>
+        </a-select>
         <a-button @click="resetSearch">重置</a-button>
         <a-button @click="loadDocs">
           <ReloadOutlined />
@@ -392,7 +515,17 @@ onMounted(async () => {
         :children-column-name="'children'"
         :default-expand-all-rows="true"
         :indent-size="28"
-        :pagination="false"
+        :pagination="{
+          current,
+          pageSize,
+          total,
+          showSizeChanger: true,
+          showQuickJumper: true,
+          showTotal: (count: number) => `共 ${count} 个顶层文档`,
+          onChange: changePage,
+          onShowSizeChange: changePage,
+        }"
+        :scroll="{ x: 1120 }"
         row-key="id"
         bordered
       >
@@ -401,7 +534,16 @@ onMounted(async () => {
             <span class="doc-name-cell" :class="{ 'parent-doc-name': record.hasChildren }">
               <span class="doc-index">{{ record.displayIndex }}</span>
               <span class="doc-name-text">{{ record.name }}</span>
+              <a-tag v-if="record.createUserId" color="purple" class="submitter-tag">
+                投稿人：{{ record.createUserName || '用户已删除' }}
+              </a-tag>
             </span>
+          </template>
+          <template v-else-if="column.dataIndex === 'ebookName'">
+            {{ ebookName(record.ebookId) }}
+          </template>
+          <template v-else-if="column.dataIndex === 'parentName'">
+            {{ parentDocName(record as DocRow) }}
           </template>
           <template v-else-if="column.dataIndex === 'status'">
             <a-tag :color="statusColor(record.status)">{{ statusText(record.status) }}</a-tag>
@@ -453,7 +595,7 @@ onMounted(async () => {
           <a-row :gutter="12">
             <a-col :span="6">
               <a-form-item label="所属电子书">
-                <a-select v-model:value="doc.ebookId" placeholder="请选择电子书" :disabled="reviewOnly">
+                <a-select v-model:value="doc.ebookId" placeholder="请选择电子书" :disabled="reviewOnly" @change="handleEditorEbookChange">
                   <a-select-option v-for="item in ebooks" :key="item.id" :value="item.id">
                     {{ item.name }}
                   </a-select-option>
@@ -587,6 +729,11 @@ onMounted(async () => {
 .parent-doc-name {
   color: #0f172a;
   font-weight: 700;
+}
+
+.submitter-tag {
+  flex: none;
+  margin-inline-end: 0;
 }
 
 .doc-editor {

@@ -111,7 +111,7 @@ public class AuthInterceptor implements HandlerInterceptor {
             return "doc:review";
         }
 
-        if (uri.equals("/doc/all")) {
+        if (uri.equals("/doc/all") || uri.equals("/doc/pageTree")) {
             return "doc:manage|doc:review";
         }
 

@@ -565,7 +565,13 @@ public class EbookController {
         }
         ebook.setStatus(STATUS_PENDING);
         ebook.setReviewRemark(null);
-        ebookService.updateById(ebook);
+        ebook.setOfflineReason(null);
+        ebookService.lambdaUpdate()
+                .eq(Ebook::getId, ebook.getId())
+                .set(Ebook::getStatus, ebook.getStatus())
+                .set(Ebook::getReviewRemark, null)
+                .set(Ebook::getOfflineReason, null)
+                .update();
         OperationLogUtil.save(operationLogService,
                 request,
                 "电子书审核",
@@ -595,7 +601,12 @@ public class EbookController {
         ebook.setStatus(req.getStatus());
         ebook.setReviewRemark(trimToNull(req.getRemark()));
         ebook.setOfflineReason(null);
-        ebookService.updateById(ebook);
+        ebookService.lambdaUpdate()
+                .eq(Ebook::getId, ebook.getId())
+                .set(Ebook::getStatus, ebook.getStatus())
+                .set(Ebook::getReviewRemark, ebook.getReviewRemark())
+                .set(Ebook::getOfflineReason, null)
+                .update();
         OperationLogUtil.save(operationLogService,
                 request,
                 "电子书审核",

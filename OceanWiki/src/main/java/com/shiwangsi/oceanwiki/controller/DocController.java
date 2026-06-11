@@ -5,11 +5,14 @@ import com.baomidou.mybatisplus.core.conditions.query.QueryWrapper;
 import com.shiwangsi.oceanwiki.entity.Content;
 import com.shiwangsi.oceanwiki.entity.Doc;
 import com.shiwangsi.oceanwiki.entity.DocVersion;
+import com.shiwangsi.oceanwiki.entity.Ebook;
 import com.shiwangsi.oceanwiki.entity.ReadingHistory;
 import com.shiwangsi.oceanwiki.entity.SensitiveWord;
+import com.shiwangsi.oceanwiki.entity.User;
 import com.shiwangsi.oceanwiki.entity.UserNotice;
 import com.shiwangsi.oceanwiki.resp.CommonResp;
 import com.shiwangsi.oceanwiki.resp.DocVoteResp;
+import com.shiwangsi.oceanwiki.resp.PageResp;
 import com.shiwangsi.oceanwiki.service.IContentService;
 import com.shiwangsi.oceanwiki.service.IDocService;
 import com.shiwangsi.oceanwiki.service.IDocVersionService;
@@ -17,6 +20,7 @@ import com.shiwangsi.oceanwiki.service.IEbookService;
 import com.shiwangsi.oceanwiki.service.IOperationLogService;
 import com.shiwangsi.oceanwiki.service.IReadingHistoryService;
 import com.shiwangsi.oceanwiki.service.ISensitiveWordService;
+import com.shiwangsi.oceanwiki.service.IUserService;
 import com.shiwangsi.oceanwiki.service.IUserNoticeService;
 import com.shiwangsi.oceanwiki.utils.AuthUtil;
 import com.shiwangsi.oceanwiki.utils.OperationLogUtil;
@@ -27,8 +31,11 @@ import org.springframework.util.StringUtils;
 import org.springframework.web.bind.annotation.*;
 
 import java.time.LocalDateTime;
+import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
+import java.util.Map;
+import java.util.stream.Collectors;
 
 // 文档管理接口
 // 后台文档管理和前台阅读页面都会调用这里
@@ -52,6 +59,7 @@ public class DocController {
     private final ISensitiveWordService sensitiveWordService;
     private final IEbookService ebookService;
     private final IUserNoticeService noticeService;
+    private final IUserService userService;
 
     public DocController(IContentService contentService,
                          IDocService docService,
@@ -60,7 +68,8 @@ public class DocController {
                          IOperationLogService operationLogService,
                          ISensitiveWordService sensitiveWordService,
                          IEbookService ebookService,
-                         IUserNoticeService noticeService) {
+                         IUserNoticeService noticeService,
+                         IUserService userService) {
         this.contentService = contentService;
         this.docService = docService;
         this.docVersionService = docVersionService;
@@ -69,15 +78,31 @@ public class DocController {
         this.sensitiveWordService = sensitiveWordService;
         this.ebookService = ebookService;
         this.noticeService = noticeService;
+        this.userService = userService;
     }
 
     // 查询全部文档，后台管理页使用
     @Operation(summary = "查询全部文档")
     @GetMapping("/all")
-    public CommonResp<List<Doc>> all(String keyword, HttpServletRequest request) {
+    public CommonResp<List<Doc>> all(Long ebookId, String keyword, String ebookName, HttpServletRequest request) {
         QueryWrapper<Doc> wrapper = new QueryWrapper<>();
+        if (ebookId != null) {
+            wrapper.eq("ebook_id", ebookId);
+        }
         if (StringUtils.hasText(keyword)) {
             wrapper.like("name", keyword);
+        }
+        if (StringUtils.hasText(ebookName)) {
+            List<Long> ebookIds = ebookService.list(new QueryWrapper<Ebook>()
+                            .select("id")
+                            .like("name", ebookName.trim()))
+                    .stream()
+                    .map(Ebook::getId)
+                    .toList();
+            if (ebookIds.isEmpty()) {
+                return CommonResp.ok(List.of());
+            }
+            wrapper.in("ebook_id", ebookIds);
         }
         if (isDocReviewOnlyUser(request)) {
             wrapper.eq("status", STATUS_PENDING);
@@ -88,14 +113,64 @@ public class DocController {
     }
 
     public CommonResp<List<Doc>> all(String keyword) {
-        return all(keyword, null);
+        return all(null, keyword, null, null);
+    }
+
+    public CommonResp<List<Doc>> all(String keyword, String ebookName) {
+        return all(null, keyword, ebookName, null);
+    }
+
+    // 分页查询文档树，后台文档管理页使用
+    // 这里分页的是顶层文档，再把这一页顶层文档下面的所有子文档带出来，避免文档很多时一次性加载全部数据
+    @Operation(summary = "分页查询文档树")
+    @GetMapping("/pageTree")
+    public CommonResp<PageResp<Doc>> pageTree(Long ebookId,
+                                              String keyword,
+                                              String ebookName,
+                                              String status,
+                                              Long current,
+                                              Long pageSize,
+                                              HttpServletRequest request) {
+        if (StringUtils.hasText(keyword)) {
+            return pageTreeByKeyword(ebookId, keyword.trim(), ebookName, status, current, pageSize, request);
+        }
+
+        QueryWrapper<Doc> wrapper = buildDocQuery(ebookId, keyword, ebookName, status, request);
+        if (wrapper == null) {
+            return CommonResp.ok(PageResp.of(List.of(), 0L, safeCurrent(current), safePageSize(pageSize)));
+        }
+
+        List<Doc> allDocs = docService.list(wrapper).stream()
+                .sorted(this::compareDocOrder)
+                .toList();
+        Map<Long, Doc> docMap = allDocs.stream()
+                .filter(doc -> doc.getId() != null)
+                .collect(Collectors.toMap(Doc::getId, doc -> doc, (oldValue, newValue) -> oldValue));
+        Map<Long, List<Doc>> childrenMap = allDocs.stream()
+                .filter(doc -> doc.getParent() != null && doc.getParent() != 0)
+                .collect(Collectors.groupingBy(Doc::getParent));
+        List<Doc> rootDocs = allDocs.stream()
+                .filter(doc -> doc.getParent() == null || doc.getParent() == 0 || !docMap.containsKey(doc.getParent()))
+                .sorted((left, right) -> compareRootDocOrder(left, right, childrenMap))
+                .toList();
+
+        long safeCurrent = safeCurrent(current);
+        long safePageSize = safePageSize(pageSize);
+        int fromIndex = (int) Math.min((safeCurrent - 1) * safePageSize, rootDocs.size());
+        int toIndex = (int) Math.min(fromIndex + safePageSize, rootDocs.size());
+        List<Doc> pageRootDocs = rootDocs.subList(fromIndex, toIndex);
+        List<Doc> pageTree = buildPageDocTree(pageRootDocs, allDocs);
+        fillCreateUserNames(pageTree);
+        return CommonResp.ok(PageResp.of(pageTree, (long) rootDocs.size(), safeCurrent, safePageSize));
     }
 
     // 根据电子书 id 查询已发布文档目录，阅读页使用
     @Operation(summary = "根据电子书查询文档")
     @GetMapping("/all/{ebookId}")
     public CommonResp<List<Doc>> allByEbookId(@PathVariable Long ebookId) {
-        return CommonResp.ok(docService.listByEbookId(ebookId));
+        List<Doc> docs = docService.listByEbookId(ebookId);
+        fillCreateUserNames(docs);
+        return CommonResp.ok(docs);
     }
 
     // 保存文档和正文内容
@@ -104,6 +179,10 @@ public class DocController {
     public CommonResp<Object> save(@RequestBody Doc doc, HttpServletRequest request) {
         boolean create = doc.getId() == null;
         Doc oldDoc = create ? null : docService.getById(doc.getId());
+        Long currentUserId = AuthUtil.getCurrentUserId(request);
+        if (create && doc.getCreateUserId() == null && currentUserId != null) {
+            doc.setCreateUserId(currentUserId);
+        }
         if (!create) {
             saveDocVersion(doc.getId(), request);
         }
@@ -336,6 +415,225 @@ public class DocController {
         }
         history.setReadTime(LocalDateTime.now());
         historyService.saveOrUpdate(history);
+    }
+
+    private QueryWrapper<Doc> buildDocQuery(Long ebookId, String keyword, String ebookName, String status, HttpServletRequest request) {
+        QueryWrapper<Doc> wrapper = new QueryWrapper<>();
+        if (ebookId != null) {
+            wrapper.eq("ebook_id", ebookId);
+        }
+        if (StringUtils.hasText(keyword)) {
+            wrapper.like("name", keyword.trim());
+        }
+        if (StringUtils.hasText(ebookName)) {
+            List<Long> ebookIds = ebookService.list(new QueryWrapper<Ebook>()
+                            .select("id")
+                            .like("name", ebookName.trim()))
+                    .stream()
+                    .map(Ebook::getId)
+                    .toList();
+            if (ebookIds.isEmpty()) {
+                return null;
+            }
+            wrapper.in("ebook_id", ebookIds);
+        }
+        if (isDocReviewOnlyUser(request)) {
+            wrapper.eq("status", STATUS_PENDING);
+            wrapper.isNotNull("create_user_id");
+        } else if (StringUtils.hasText(status)) {
+            wrapper.eq("status", status.trim());
+        }
+        return wrapper;
+    }
+
+    private CommonResp<PageResp<Doc>> pageTreeByKeyword(Long ebookId,
+                                                        String keyword,
+                                                        String ebookName,
+                                                        String status,
+                                                        Long current,
+                                                        Long pageSize,
+                                                        HttpServletRequest request) {
+        QueryWrapper<Doc> wrapper = buildDocQuery(ebookId, null, ebookName, status, request);
+        if (wrapper == null) {
+            return CommonResp.ok(PageResp.of(List.of(), 0L, safeCurrent(current), safePageSize(pageSize)));
+        }
+
+        List<Doc> allDocs = docService.list(wrapper.orderByAsc("ebook_id", "sort", "id"));
+        Map<Long, Doc> docMap = allDocs.stream()
+                .filter(doc -> doc.getId() != null)
+                .collect(Collectors.toMap(Doc::getId, doc -> doc, (oldValue, newValue) -> oldValue));
+        Map<Long, List<Doc>> childrenMap = allDocs.stream()
+                .filter(doc -> doc.getParent() != null && doc.getParent() != 0)
+                .collect(Collectors.groupingBy(Doc::getParent));
+        List<Doc> matchedRootDocs = allDocs.stream()
+                .filter(doc -> StringUtils.hasText(doc.getName()) && doc.getName().contains(keyword))
+                .map(doc -> findRootDoc(doc, docMap))
+                .filter(root -> root != null && root.getId() != null)
+                .collect(Collectors.toMap(Doc::getId, root -> root, (oldValue, newValue) -> oldValue))
+                .values()
+                .stream()
+                .sorted((left, right) -> compareRootDocOrder(left, right, childrenMap))
+                .toList();
+
+        long safeCurrent = safeCurrent(current);
+        long safePageSize = safePageSize(pageSize);
+        int fromIndex = (int) Math.min((safeCurrent - 1) * safePageSize, matchedRootDocs.size());
+        int toIndex = (int) Math.min(fromIndex + safePageSize, matchedRootDocs.size());
+        List<Doc> pageRootDocs = matchedRootDocs.subList(fromIndex, toIndex);
+        List<Doc> pageTree = buildPageDocTree(pageRootDocs, allDocs);
+        fillCreateUserNames(pageTree);
+        return CommonResp.ok(PageResp.of(pageTree, (long) matchedRootDocs.size(), safeCurrent, safePageSize));
+    }
+
+    private Doc findRootDoc(Doc doc, Map<Long, Doc> docMap) {
+        Doc currentDoc = doc;
+        while (currentDoc != null && currentDoc.getParent() != null && currentDoc.getParent() != 0) {
+            Doc parentDoc = docMap.get(currentDoc.getParent());
+            if (parentDoc == null) {
+                break;
+            }
+            currentDoc = parentDoc;
+        }
+        return currentDoc;
+    }
+
+    private int compareDocOrder(Doc left, Doc right) {
+        int pendingCompare = Boolean.compare(isPendingDoc(right), isPendingDoc(left));
+        if (pendingCompare != 0) {
+            return pendingCompare;
+        }
+        int ebookCompare = compareLong(left.getEbookId(), right.getEbookId());
+        if (ebookCompare != 0) {
+            return ebookCompare;
+        }
+        int sortCompare = compareInteger(left.getSort(), right.getSort());
+        if (sortCompare != 0) {
+            return sortCompare;
+        }
+        return compareLong(left.getId(), right.getId());
+    }
+
+    private int compareLong(Long left, Long right) {
+        if (left == null && right == null) {
+            return 0;
+        }
+        if (left == null) {
+            return -1;
+        }
+        if (right == null) {
+            return 1;
+        }
+        return left.compareTo(right);
+    }
+
+    private boolean isPendingDoc(Doc doc) {
+        return doc != null && STATUS_PENDING.equals(doc.getStatus());
+    }
+
+    private int compareRootDocOrder(Doc left, Doc right, Map<Long, List<Doc>> childrenMap) {
+        int pendingCompare = Boolean.compare(hasPendingDoc(right, childrenMap), hasPendingDoc(left, childrenMap));
+        if (pendingCompare != 0) {
+            return pendingCompare;
+        }
+        return compareDocOrder(left, right);
+    }
+
+    private boolean hasPendingDoc(Doc doc, Map<Long, List<Doc>> childrenMap) {
+        if (isPendingDoc(doc)) {
+            return true;
+        }
+        if (doc == null || doc.getId() == null) {
+            return false;
+        }
+        return childrenMap.getOrDefault(doc.getId(), List.of()).stream()
+                .anyMatch(child -> hasPendingDoc(child, childrenMap));
+    }
+
+    private int compareInteger(Integer left, Integer right) {
+        if (left == null && right == null) {
+            return 0;
+        }
+        if (left == null) {
+            return -1;
+        }
+        if (right == null) {
+            return 1;
+        }
+        return left.compareTo(right);
+    }
+
+    private List<Doc> buildPageDocTree(List<Doc> rootDocs, List<Doc> allMatchedDocs) {
+        Map<Long, List<Doc>> childrenMap = allMatchedDocs.stream()
+                .filter(doc -> doc.getParent() != null && doc.getParent() != 0)
+                .collect(Collectors.groupingBy(Doc::getParent));
+
+        List<Doc> result = new ArrayList<>();
+        for (Doc rootDoc : rootDocs) {
+            attachChildren(rootDoc, childrenMap);
+            result.add(rootDoc);
+        }
+        return result;
+    }
+
+    private void attachChildren(Doc parentDoc, Map<Long, List<Doc>> childrenMap) {
+        if (parentDoc.getId() == null) {
+            parentDoc.setChildren(List.of());
+            return;
+        }
+
+        List<Doc> children = childrenMap.getOrDefault(parentDoc.getId(), List.of()).stream()
+                .sorted(this::compareDocOrder)
+                .toList();
+        for (Doc child : children) {
+            attachChildren(child, childrenMap);
+        }
+        parentDoc.setChildren(children);
+    }
+
+    private void fillCreateUserNames(List<Doc> docs) {
+        List<Doc> flatDocs = new ArrayList<>();
+        collectDocs(docs, flatDocs);
+        List<Long> userIds = flatDocs.stream()
+                .map(Doc::getCreateUserId)
+                .filter(id -> id != null)
+                .distinct()
+                .toList();
+        if (userIds.isEmpty()) {
+            return;
+        }
+
+        Map<Long, String> userNameMap = userService.list(new QueryWrapper<User>().in("id", userIds))
+                .stream()
+                .collect(Collectors.toMap(
+                        User::getId,
+                        user -> StringUtils.hasText(user.getName()) ? user.getName() : user.getLoginName(),
+                        (oldValue, newValue) -> oldValue
+                ));
+
+        flatDocs.stream()
+                .filter(doc -> doc.getCreateUserId() != null)
+                .forEach(doc -> doc.setCreateUserName(userNameMap.getOrDefault(doc.getCreateUserId(), "用户已删除")));
+    }
+
+    private void collectDocs(List<Doc> sourceDocs, List<Doc> flatDocs) {
+        if (sourceDocs == null || sourceDocs.isEmpty()) {
+            return;
+        }
+        for (Doc doc : sourceDocs) {
+            flatDocs.add(doc);
+            collectDocs(doc.getChildren(), flatDocs);
+        }
+    }
+
+    private long safeCurrent(Long current) {
+        return current == null || current < 1 ? 1 : current;
+    }
+
+    private long safePageSize(Long pageSize) {
+        if (pageSize == null || pageSize < 1) {
+            return 10;
+        }
+        return Math.min(pageSize, 100);
     }
 
     private void saveDocVersion(Long docId, HttpServletRequest request) {

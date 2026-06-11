@@ -8,6 +8,8 @@ import com.shiwangsi.oceanwiki.controller.DocController;
 import com.shiwangsi.oceanwiki.controller.FavoriteController;
 import com.shiwangsi.oceanwiki.controller.FeedbackController;
 import com.shiwangsi.oceanwiki.controller.NoticeController;
+import com.shiwangsi.oceanwiki.controller.ReadingHistoryController;
+import com.shiwangsi.oceanwiki.entity.Doc;
 import com.shiwangsi.oceanwiki.entity.OperationLog;
 import com.shiwangsi.oceanwiki.entity.ReadingHistory;
 import com.shiwangsi.oceanwiki.entity.UserComment;
@@ -21,6 +23,7 @@ import com.shiwangsi.oceanwiki.rep.FeedbackHandleReq;
 import com.shiwangsi.oceanwiki.rep.FeedbackReq;
 import com.shiwangsi.oceanwiki.resp.CommonResp;
 import com.shiwangsi.oceanwiki.resp.FavoriteStatusResp;
+import com.shiwangsi.oceanwiki.resp.PageResp;
 import com.shiwangsi.oceanwiki.service.IOperationLogService;
 import com.shiwangsi.oceanwiki.service.IReadingHistoryService;
 import com.shiwangsi.oceanwiki.service.IUserCommentService;
@@ -53,6 +56,9 @@ class UserFeatureIntegrationTest extends BaseIntegrationTest {
 
     @Autowired
     private NoticeController noticeController;
+
+    @Autowired
+    private ReadingHistoryController historyController;
 
     @Autowired
     private IUserFavoriteService favoriteService;
@@ -121,6 +127,99 @@ class UserFeatureIntegrationTest extends BaseIntegrationTest {
         assertThat(history.getEbookId()).isEqualTo(ebook.getId());
 
         AuthTokenStore.remove(token);
+    }
+
+    @Test
+    void readingHistoryProgressShouldUseWholeEbookLeafDocs() {
+        Doc secondDoc = createDoc(ebook.getId(), "第二篇文档");
+        String token = TEST_PREFIX + "ebook_progress_token";
+        MockHttpServletRequest request = loginRequest(token, normalUser.getId(), List.of("NORMAL_USER"), List.of("ebook:view"));
+
+        docController.findContent(doc.getId(), request);
+        historyController.updateProgress(progressReq(doc.getId(), 100), request);
+
+        CommonResp<List<ReadingHistory>> halfResp = historyController.my(request);
+        ReadingHistory firstHistory = halfResp.getContent().stream()
+                .filter(item -> doc.getId().equals(item.getDocId()))
+                .findFirst()
+                .orElseThrow();
+
+        docController.findContent(secondDoc.getId(), request);
+        historyController.updateProgress(progressReq(secondDoc.getId(), 100), request);
+
+        CommonResp<List<ReadingHistory>> fullResp = historyController.my(request);
+        ReadingHistory latestEbookHistory = fullResp.getContent().stream()
+                .filter(item -> ebook.getId().equals(item.getEbookId()))
+                .findFirst()
+                .orElseThrow();
+
+        assertThat(halfResp.getContent()).filteredOn(item -> ebook.getId().equals(item.getEbookId())).hasSize(1);
+        assertThat(fullResp.getContent()).filteredOn(item -> ebook.getId().equals(item.getEbookId())).hasSize(1);
+        assertThat(firstHistory.getProgress()).isEqualTo(50);
+        assertThat(latestEbookHistory.getProgress()).isEqualTo(100);
+        assertThat(latestEbookHistory.getDocId()).isEqualTo(secondDoc.getId());
+        assertThat(latestEbookHistory.getDocName()).contains("第二篇文档");
+
+        historyController.delete(latestEbookHistory.getId(), request);
+        long remainingHistoryCount = historyService.count(new QueryWrapper<ReadingHistory>()
+                .eq("user_id", normalUser.getId())
+                .eq("ebook_id", ebook.getId()));
+        assertThat(remainingHistoryCount).isZero();
+
+        AuthTokenStore.remove(token);
+    }
+
+    @Test
+    void docAllShouldSupportFuzzySearchByEbookName() {
+        ebook.setName(TEST_PREFIX + "虎鲸电子书");
+        ebookService.updateById(ebook);
+
+        CommonResp<List<Doc>> matchedResp = docController.all(null, null, "虎鲸", null);
+        CommonResp<List<Doc>> emptyResp = docController.all(null, null, "不存在的电子书名称", null);
+
+        assertThat(matchedResp.getContent()).extracting(Doc::getEbookId).contains(ebook.getId());
+        assertThat(emptyResp.getContent()).isEmpty();
+    }
+
+    @Test
+    void docPageTreeShouldPageRootDocsAndKeepChildren() {
+        Doc parentDoc = createDoc(ebook.getId(), "父文档");
+        Doc childDoc = createDoc(ebook.getId(), "子文档");
+        childDoc.setParent(parentDoc.getId());
+        docService.updateById(childDoc);
+
+        CommonResp<PageResp<Doc>> resp = docController.pageTree(ebook.getId(), "父文档", null, null, 1L, 10L, null);
+
+        assertThat(resp.isSuccess()).isTrue();
+        assertThat(resp.getContent().getTotal()).isEqualTo(1);
+        assertThat(resp.getContent().getRecords()).hasSize(1);
+        assertThat(resp.getContent().getRecords().get(0).getName()).contains("父文档");
+        assertThat(resp.getContent().getRecords().get(0).getChildren())
+                .extracting(Doc::getName)
+                .anyMatch(name -> name.contains("子文档"));
+
+        CommonResp<PageResp<Doc>> childSearchResp = docController.pageTree(ebook.getId(), "子文档", null, null, 1L, 10L, null);
+        assertThat(childSearchResp.getContent().getRecords()).hasSize(1);
+        assertThat(childSearchResp.getContent().getRecords().get(0).getName()).contains("父文档");
+        assertThat(childSearchResp.getContent().getRecords().get(0).getChildren())
+                .extracting(Doc::getName)
+                .anyMatch(name -> name.contains("子文档"));
+    }
+
+    @Test
+    void docPageTreeShouldPutPendingSubmissionFirstAndReturnSubmitterName() {
+        Doc publishedDoc = createDoc(ebook.getId(), "普通已发布文档");
+        Doc pendingDoc = createDoc(ebook.getId(), "用户投稿待审核文档");
+        pendingDoc.setStatus("pending");
+        pendingDoc.setCreateUserId(normalUser.getId());
+        docService.updateById(pendingDoc);
+
+        CommonResp<PageResp<Doc>> resp = docController.pageTree(ebook.getId(), null, null, null, 1L, 10L, null);
+
+        assertThat(resp.isSuccess()).isTrue();
+        assertThat(resp.getContent().getRecords()).extracting(Doc::getId).contains(publishedDoc.getId(), pendingDoc.getId());
+        assertThat(resp.getContent().getRecords().get(0).getId()).isEqualTo(pendingDoc.getId());
+        assertThat(resp.getContent().getRecords().get(0).getCreateUserName()).isEqualTo(normalUser.getName());
     }
 
     @Test
@@ -280,6 +379,13 @@ class UserFeatureIntegrationTest extends BaseIntegrationTest {
         MockHttpServletRequest request = new MockHttpServletRequest();
         request.addHeader("Authorization", token);
         return request;
+    }
+
+    private java.util.Map<String, Object> progressReq(Long docId, Integer progress) {
+        return java.util.Map.of(
+                "docId", docId,
+                "progress", progress
+        );
     }
 
     private UserNotice createNotice(Long userId, String title) {

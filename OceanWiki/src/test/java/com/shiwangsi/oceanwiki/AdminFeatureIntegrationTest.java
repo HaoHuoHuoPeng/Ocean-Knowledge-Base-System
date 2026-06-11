@@ -4,9 +4,11 @@ package com.shiwangsi.oceanwiki;
 import com.baomidou.mybatisplus.core.conditions.query.QueryWrapper;
 import com.shiwangsi.oceanwiki.config.auth.AuthTokenStore;
 import com.shiwangsi.oceanwiki.controller.CommentController;
+import com.shiwangsi.oceanwiki.controller.EbookController;
 import com.shiwangsi.oceanwiki.controller.FeedbackController;
 import com.shiwangsi.oceanwiki.controller.OperationLogController;
 import com.shiwangsi.oceanwiki.controller.SensitiveWordController;
+import com.shiwangsi.oceanwiki.entity.Ebook;
 import com.shiwangsi.oceanwiki.entity.FeedbackReply;
 import com.shiwangsi.oceanwiki.entity.OperationLog;
 import com.shiwangsi.oceanwiki.entity.SensitiveWord;
@@ -38,6 +40,9 @@ class AdminFeatureIntegrationTest extends BaseIntegrationTest {
 
     @Autowired
     private FeedbackController feedbackController;
+
+    @Autowired
+    private EbookController ebookController;
 
     @Autowired
     private OperationLogController operationLogController;
@@ -193,6 +198,47 @@ class AdminFeatureIntegrationTest extends BaseIntegrationTest {
         assertThat(feedbackPage.getContent().getRecords()).extracting(UserFeedback::getId).doesNotContain(handledFeedback.getId());
 
         AuthTokenStore.remove(TEST_PREFIX + "content_reviewer_filter_token");
+    }
+
+    @Test
+    void offlineEbookShouldClearOfflineReasonWhenSubmitReviewAgain() {
+        ebook.setStatus("published");
+        ebook.setReviewRemark(null);
+        ebook.setOfflineReason(null);
+        ebookService.updateById(ebook);
+
+        MockHttpServletRequest adminRequest = loginRequest(
+                TEST_PREFIX + "ebook_review_admin_token",
+                anotherUser.getId(),
+                List.of("SUPER_ADMIN"),
+                List.of("ebook:manage", "ebook:review")
+        );
+
+        EbookController.EbookReviewReq offlineReq = new EbookController.EbookReviewReq();
+        offlineReq.setId(ebook.getId());
+        offlineReq.setRemark("测试下架原因");
+        CommonResp<Object> offlineResp = ebookController.offline(offlineReq, adminRequest);
+
+        CommonResp<Object> submitResp = ebookController.submitReview(ebook.getId(), adminRequest);
+        Ebook pendingEbook = ebookService.getById(ebook.getId());
+
+        assertThat(offlineResp.isSuccess()).isTrue();
+        assertThat(submitResp.isSuccess()).isTrue();
+        assertThat(pendingEbook.getStatus()).isEqualTo("pending");
+        assertThat(pendingEbook.getOfflineReason()).isNull();
+
+        EbookController.EbookReviewReq reviewReq = new EbookController.EbookReviewReq();
+        reviewReq.setId(ebook.getId());
+        reviewReq.setStatus("published");
+        reviewReq.setRemark("");
+        CommonResp<Object> reviewResp = ebookController.review(reviewReq, adminRequest);
+        Ebook publishedEbook = ebookService.getById(ebook.getId());
+
+        assertThat(reviewResp.isSuccess()).isTrue();
+        assertThat(publishedEbook.getStatus()).isEqualTo("published");
+        assertThat(publishedEbook.getOfflineReason()).isNull();
+
+        AuthTokenStore.remove(TEST_PREFIX + "ebook_review_admin_token");
     }
 
     @Test

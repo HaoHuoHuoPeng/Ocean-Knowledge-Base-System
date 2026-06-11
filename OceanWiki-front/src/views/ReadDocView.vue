@@ -514,6 +514,9 @@ onUnmounted(() => {
               <a-typography-title :level="3">
                 {{ currentDoc?.name || '请选择文档' }}
               </a-typography-title>
+              <div v-if="currentDoc" class="doc-author-line">
+                <a-tag color="purple">投稿人：{{ currentDoc.createUserName || '管理员' }}</a-tag>
+              </div>
               <div class="muted">
                 阅读 {{ currentDoc?.viewCount || 0 }} · 点赞 {{ currentDoc?.voteCount || 0 }} · 进度 {{ readingProgress }}%
               </div>
@@ -701,6 +704,10 @@ onUnmounted(() => {
 
 .html-content :deep(p) {
   margin: 0 0 12px;
+}
+
+.doc-author-line {
+  margin: -4px 0 8px;
 }
 
 .comment-row-actions {

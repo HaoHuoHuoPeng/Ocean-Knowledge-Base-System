@@ -7,6 +7,7 @@ import {
   DeleteOutlined,
   DownloadOutlined,
   EditOutlined,
+  InfoCircleOutlined,
   PlusOutlined,
   ReloadOutlined,
   SearchOutlined,
@@ -303,6 +304,13 @@ const remove = (record: Ebook) => {
   })
 }
 
+const showOfflineReason = (record: Ebook) => {
+  Modal.info({
+    title: `「${record.name}」的下架原因`,
+    content: record.offlineReason || '暂无下架原因',
+  })
+}
+
 const beforeCoverUpload = async (file: File) => {
   if (!file.type.startsWith('image/')) {
     message.warning('请选择图片文件')
@@ -413,11 +421,8 @@ onMounted(async () => {
           <template v-else-if="column.dataIndex === 'status'">
             <a-space direction="vertical" size="small">
               <a-tag :color="statusColor(record.status)">{{ statusText(record.status) }}</a-tag>
-              <a-tooltip v-if="record.reviewRemark" :title="record.reviewRemark">
+              <a-tooltip v-if="record.status === 'rejected' && record.reviewRemark" :title="record.reviewRemark">
                 <span class="status-note">审核备注</span>
-              </a-tooltip>
-              <a-tooltip v-if="record.offlineReason" :title="record.offlineReason">
-                <span class="status-note">下架原因</span>
               </a-tooltip>
             </a-space>
           </template>
@@ -446,6 +451,14 @@ onMounted(async () => {
               <a-button v-if="canManageEbook" size="small" danger @click="remove(record as Ebook)">
                 <DeleteOutlined />
                 删除
+              </a-button>
+              <a-button
+                v-if="canManageEbook && record.status === 'offline' && record.offlineReason"
+                size="small"
+                @click="showOfflineReason(record as Ebook)"
+              >
+                <InfoCircleOutlined />
+                下架原因
               </a-button>
             </a-space>
           </template>

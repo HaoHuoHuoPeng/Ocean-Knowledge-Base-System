@@ -113,6 +113,8 @@ export interface Doc {
   reviewRemark?: string
   // 创建人 id，普通用户投稿时用来记录是谁提交的
   createUserId?: IdValue
+  // 投稿人姓名，后端根据 createUserId 查询后返回，页面只负责展示
+  createUserName?: string
   // 文档正文，富文本编辑器生成的 HTML 内容
   content?: string
   // 前端树形展示用的子文档列表

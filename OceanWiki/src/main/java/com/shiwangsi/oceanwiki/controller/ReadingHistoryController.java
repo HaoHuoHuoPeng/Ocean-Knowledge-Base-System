@@ -16,8 +16,12 @@ import jakarta.servlet.http.HttpServletRequest;
 import org.springframework.web.bind.annotation.*;
 
 import java.time.LocalDateTime;
+import java.util.HashSet;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
+import java.util.stream.Collectors;
 
 // 阅读历史接口
 // 用户每次打开正文都会更新最近阅读时间，个人中心可以查看最近读过哪些内容
@@ -44,8 +48,15 @@ public class ReadingHistoryController {
         List<ReadingHistory> list = historyService.list(new QueryWrapper<ReadingHistory>()
                 .eq("user_id", userId)
                 .orderByDesc("read_time"));
-        list.forEach(this::fillName);
-        return CommonResp.ok(list);
+        Map<Long, ReadingHistory> latestHistoryMap = new LinkedHashMap<>();
+        for (ReadingHistory history : list) {
+            if (history.getEbookId() != null) {
+                latestHistoryMap.putIfAbsent(history.getEbookId(), history);
+            }
+        }
+        List<ReadingHistory> ebookHistories = latestHistoryMap.values().stream().toList();
+        ebookHistories.forEach(history -> fillDisplayInfo(history, userId));
+        return CommonResp.ok(ebookHistories);
     }
 
     // 查询最近阅读的一条记录
@@ -59,7 +70,7 @@ public class ReadingHistoryController {
                 .orderByDesc("read_time")
                 .last("limit 1"));
         if (history != null) {
-            fillName(history);
+            fillDisplayInfo(history, userId);
         }
         return CommonResp.ok(history);
     }
@@ -69,9 +80,15 @@ public class ReadingHistoryController {
     @DeleteMapping("/delete/{id}")
     public CommonResp<Object> delete(@PathVariable Long id, HttpServletRequest request) {
         Long userId = AuthUtil.requireLogin(request);
-        historyService.remove(new QueryWrapper<ReadingHistory>()
+        ReadingHistory history = historyService.getOne(new QueryWrapper<ReadingHistory>()
                 .eq("id", id)
                 .eq("user_id", userId));
+        if (history == null) {
+            return CommonResp.ok("删除成功", null);
+        }
+        historyService.remove(new QueryWrapper<ReadingHistory>()
+                .eq("user_id", userId)
+                .eq("ebook_id", history.getEbookId()));
         return CommonResp.ok("删除成功", null);
     }
 
@@ -114,10 +131,47 @@ public class ReadingHistoryController {
         return CommonResp.ok("阅读进度已保存", null);
     }
 
-    private void fillName(ReadingHistory history) {
+    private void fillDisplayInfo(ReadingHistory history, Long userId) {
         Ebook ebook = ebookService.getById(history.getEbookId());
         Doc doc = docService.getById(history.getDocId());
         history.setEbookName(ebook == null ? "电子书已删除" : ebook.getName());
         history.setDocName(doc == null ? "文档已删除" : doc.getName());
+        history.setProgress(calculateEbookProgress(userId, history.getEbookId()));
+    }
+
+    private Integer calculateEbookProgress(Long userId, Long ebookId) {
+        if (userId == null || ebookId == null) {
+            return 0;
+        }
+
+        List<Doc> docs = docService.listByEbookId(ebookId);
+        List<Long> readableDocIds = findReadableLeafDocIds(docs);
+        if (readableDocIds.isEmpty()) {
+            return 0;
+        }
+
+        List<ReadingHistory> histories = historyService.list(new QueryWrapper<ReadingHistory>()
+                .eq("user_id", userId)
+                .eq("ebook_id", ebookId)
+                .in("doc_id", readableDocIds));
+        Set<Long> completedDocIds = histories.stream()
+                .filter(history -> history.getProgress() != null && history.getProgress() >= 100)
+                .map(ReadingHistory::getDocId)
+                .collect(Collectors.toSet());
+
+        return Math.min(100, Math.round(completedDocIds.size() * 100F / readableDocIds.size()));
+    }
+
+    private List<Long> findReadableLeafDocIds(List<Doc> docs) {
+        Set<Long> parentIds = docs.stream()
+                .map(Doc::getParent)
+                .filter(parent -> parent != null && parent != 0)
+                .collect(Collectors.toCollection(HashSet::new));
+
+        return docs.stream()
+                .filter(doc -> doc.getId() != null)
+                .filter(doc -> !parentIds.contains(doc.getId()))
+                .map(Doc::getId)
+                .toList();
     }
 }

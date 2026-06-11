@@ -8,6 +8,7 @@ import com.baomidou.mybatisplus.annotation.TableName;
 import lombok.Data;
 
 import java.io.Serializable;
+import java.util.List;
 
 // 文档实体类，对应数据库中的 doc 表
 // 一本电子书下面可以有多个文档，文档之间也可以通过 parent 组成目录树
@@ -53,8 +54,16 @@ public class Doc implements Serializable {
     @TableField("create_user_id")
     private Long createUserId;
 
+    // 投稿人姓名，只给前端展示使用，不保存到 doc 表
+    @TableField(exist = false)
+    private String createUserName;
+
     // 正文内容不在 doc 表里，而是在 content 表里；这个字段只给前后端传参使用
     @TableField(exist = false)
     private String content;
+
+    // 前端文档管理树形表格使用的子文档列表，不保存到 doc 表
+    @TableField(exist = false)
+    private List<Doc> children;
 }
 

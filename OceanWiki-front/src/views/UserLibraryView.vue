@@ -199,6 +199,10 @@ const canContinueRead = (record: ReadingHistory) => {
   return !!record.ebookId && !!record.docId && record.ebookName !== '电子书已删除' && record.docName !== '文档已删除'
 }
 
+const lastReadText = (record: ReadingHistory) => {
+  return record.docName && record.docName !== '文档已删除' ? `上次读到：${record.docName}` : '上次读到的文档已删除'
+}
+
 onMounted(loadData)
 </script>
 
@@ -244,7 +248,11 @@ onMounted(loadData)
           <a-tab-pane key="history" tab="阅读历史">
             <a-table :data-source="histories" row-key="id" bordered>
               <a-table-column title="电子书" data-index="ebookName" />
-              <a-table-column title="文档" data-index="docName" />
+              <a-table-column title="上次读到">
+                <template #default="{ record }">
+                  {{ lastReadText(record) }}
+                </template>
+              </a-table-column>
               <a-table-column title="阅读进度" data-index="progress" width="150">
                 <template #default="{ record }">
                   <a-progress :percent="record.progress || 0" size="small" />
