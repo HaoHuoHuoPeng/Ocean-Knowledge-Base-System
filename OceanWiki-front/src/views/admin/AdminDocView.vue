@@ -49,6 +49,24 @@ const reviewOnly = computed(() => canReviewDoc.value && !canManageDoc.value)
 const pageTitle = computed(() => (reviewOnly.value ? '文档审核' : '海洋生物文档管理'))
 const modalTitle = computed(() => (reviewOnly.value ? '查看投稿文档' : '文档编辑'))
 const modalFooter = computed(() => (reviewOnly.value ? null : undefined))
+const statusOptions = computed(() => {
+  const options = [
+    { value: 'draft', label: '草稿' },
+    { value: 'pending', label: '待审核' },
+    { value: 'published', label: '已发布' },
+  ]
+
+  // 已驳回和已下架属于处理结果，不应该在新增文档时让管理员主动选择。
+  // 如果编辑的是历史上已经处于这些状态的文档，只保留当前状态用于正常回显。
+  if (doc.value.id && doc.value.status === 'rejected') {
+    options.push({ value: 'rejected', label: '已驳回' })
+  }
+  if (doc.value.id && doc.value.status === 'offline') {
+    options.push({ value: 'offline', label: '已下架' })
+  }
+
+  return options
+})
 
 const doc = ref<Doc>({
   // 所属电子书 id
@@ -463,11 +481,9 @@ onMounted(async () => {
             <a-col :span="6">
               <a-form-item label="发布状态">
                 <a-select v-model:value="doc.status" :disabled="reviewOnly">
-                  <a-select-option value="draft">草稿</a-select-option>
-                  <a-select-option value="pending">待审核</a-select-option>
-                  <a-select-option value="published">已发布</a-select-option>
-                  <a-select-option value="rejected">已驳回</a-select-option>
-                  <a-select-option value="offline">已下架</a-select-option>
+                  <a-select-option v-for="item in statusOptions" :key="item.value" :value="item.value">
+                    {{ item.label }}
+                  </a-select-option>
                 </a-select>
               </a-form-item>
             </a-col>
@@ -498,7 +514,7 @@ onMounted(async () => {
                 placeholder="在这里编写正文。可以直接使用工具栏插入图片、表格、引用、列表等内容。"
               />
               <div v-if="!editLoading && reviewOnly" class="review-content" v-html="doc.content || '<p>暂无正文内容</p>'"></div>
-              <div v-else class="editor-loading-tip">正文加载中，请稍等...</div>
+              <div v-if="editLoading" class="editor-loading-tip">正文加载中，请稍等...</div>
 <!--              <div class="editor-help">
                 <span>建议结构：</span>
                 <span>背景说明</span>
@@ -671,6 +687,27 @@ onMounted(async () => {
   background: #fff;
   border: 1px solid #e5e7eb;
   border-radius: 6px;
+}
+
+.review-content :deep(table) {
+  width: 100%;
+  margin: 14px 0;
+  border-collapse: collapse;
+  table-layout: fixed;
+}
+
+.review-content :deep(th),
+.review-content :deep(td) {
+  min-width: 72px;
+  padding: 8px 10px;
+  border: 1px solid #cbd5e1;
+  vertical-align: top;
+  word-break: break-word;
+}
+
+.review-content :deep(th) {
+  background: #f8fafc;
+  font-weight: 700;
 }
 
 :global(.review-reason-tip) {

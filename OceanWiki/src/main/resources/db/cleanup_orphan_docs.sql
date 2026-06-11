@@ -9,24 +9,27 @@ SET SQL_SAFE_UPDATES = 0;
 
 DROP TEMPORARY TABLE IF EXISTS tmp_orphan_doc;
 
-CREATE TEMPORARY TABLE tmp_orphan_doc (
-    id BIGINT PRIMARY KEY
-);
+-- 使用递归查询一次性找出所有残留文档。
+-- 不能一边读取临时表一边插入同一个临时表，否则 MySQL 会报 Can't reopen table。
+CREATE TEMPORARY TABLE tmp_orphan_doc AS
+WITH RECURSIVE orphan_tree AS (
+    -- 第一层：父文档已经不存在的文档。
+    SELECT d.id
+    FROM doc d
+    LEFT JOIN doc p ON d.parent = p.id
+    WHERE d.parent IS NOT NULL
+      AND d.parent <> 0
+      AND p.id IS NULL
 
--- 找出父文档已经不存在的文档。
-INSERT INTO tmp_orphan_doc (id)
-SELECT d.id
-FROM doc d
-LEFT JOIN doc p ON d.parent = p.id
-WHERE d.parent IS NOT NULL
-  AND d.parent <> 0
-  AND p.id IS NULL;
+    UNION ALL
 
--- 如果孤儿文档下面还有子文档，也继续向下找出来。
-INSERT IGNORE INTO tmp_orphan_doc (id)
-SELECT child.id
-FROM doc child
-JOIN tmp_orphan_doc orphan_parent ON child.parent = orphan_parent.id;
+    -- 后续层：孤儿文档下面的子文档也一起清理。
+    SELECT child.id
+    FROM doc child
+    JOIN orphan_tree parent_orphan ON child.parent = parent_orphan.id
+)
+SELECT DISTINCT id
+FROM orphan_tree;
 
 -- 删除这些残留文档的关联数据。
 DELETE c

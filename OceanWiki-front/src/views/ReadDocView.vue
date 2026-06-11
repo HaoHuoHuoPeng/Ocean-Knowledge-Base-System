@@ -673,6 +673,36 @@ onUnmounted(() => {
   line-height: 1.8;
 }
 
+.html-content {
+  color: #1f2937;
+  line-height: 1.9;
+}
+
+.html-content :deep(table) {
+  width: 100%;
+  margin: 16px 0;
+  border-collapse: collapse;
+  table-layout: fixed;
+}
+
+.html-content :deep(th),
+.html-content :deep(td) {
+  min-width: 72px;
+  padding: 8px 10px;
+  border: 1px solid #cbd5e1;
+  vertical-align: top;
+  word-break: break-word;
+}
+
+.html-content :deep(th) {
+  background: #f8fafc;
+  font-weight: 700;
+}
+
+.html-content :deep(p) {
+  margin: 0 0 12px;
+}
+
 .comment-row-actions {
   display: flex;
   gap: 8px;
