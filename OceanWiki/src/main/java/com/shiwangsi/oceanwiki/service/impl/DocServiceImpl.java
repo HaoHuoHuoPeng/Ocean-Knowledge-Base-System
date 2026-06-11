@@ -5,12 +5,20 @@ import com.baomidou.mybatisplus.core.conditions.query.QueryWrapper;
 import com.baomidou.mybatisplus.extension.service.impl.ServiceImpl;
 import com.shiwangsi.oceanwiki.entity.Content;
 import com.shiwangsi.oceanwiki.entity.Doc;
+import com.shiwangsi.oceanwiki.entity.DocVersion;
 import com.shiwangsi.oceanwiki.entity.DocVote;
+import com.shiwangsi.oceanwiki.entity.ReadingHistory;
+import com.shiwangsi.oceanwiki.entity.UserComment;
+import com.shiwangsi.oceanwiki.entity.UserFavorite;
 import com.shiwangsi.oceanwiki.exception.BusinessException;
 import com.shiwangsi.oceanwiki.exception.BusinessExceptionCode;
 import com.shiwangsi.oceanwiki.mapper.ContentMapper;
 import com.shiwangsi.oceanwiki.mapper.DocMapper;
+import com.shiwangsi.oceanwiki.mapper.DocVersionMapper;
 import com.shiwangsi.oceanwiki.mapper.EbookMapper;
+import com.shiwangsi.oceanwiki.mapper.ReadingHistoryMapper;
+import com.shiwangsi.oceanwiki.mapper.UserCommentMapper;
+import com.shiwangsi.oceanwiki.mapper.UserFavoriteMapper;
 import com.shiwangsi.oceanwiki.resp.DocVoteResp;
 import com.shiwangsi.oceanwiki.service.IDocService;
 import com.shiwangsi.oceanwiki.service.IDocVoteService;
@@ -19,7 +27,12 @@ import org.springframework.transaction.annotation.Transactional;
 import org.springframework.util.StringUtils;
 
 import java.time.LocalDateTime;
+import java.util.ArrayList;
+import java.util.HashSet;
 import java.util.List;
+import java.util.Map;
+import java.util.Set;
+import java.util.stream.Collectors;
 
 // 文档业务实现类
 // 这个类负责把 doc 表和 content 表一起维护好
@@ -29,11 +42,25 @@ public class DocServiceImpl extends ServiceImpl<DocMapper, Doc> implements IDocS
     private final ContentMapper contentMapper;
     private final EbookMapper ebookMapper;
     private final IDocVoteService docVoteService;
+    private final DocVersionMapper docVersionMapper;
+    private final ReadingHistoryMapper readingHistoryMapper;
+    private final UserFavoriteMapper userFavoriteMapper;
+    private final UserCommentMapper userCommentMapper;
 
-    public DocServiceImpl(ContentMapper contentMapper, EbookMapper ebookMapper, IDocVoteService docVoteService) {
+    public DocServiceImpl(ContentMapper contentMapper,
+                          EbookMapper ebookMapper,
+                          IDocVoteService docVoteService,
+                          DocVersionMapper docVersionMapper,
+                          ReadingHistoryMapper readingHistoryMapper,
+                          UserFavoriteMapper userFavoriteMapper,
+                          UserCommentMapper userCommentMapper) {
         this.contentMapper = contentMapper;
         this.ebookMapper = ebookMapper;
         this.docVoteService = docVoteService;
+        this.docVersionMapper = docVersionMapper;
+        this.readingHistoryMapper = readingHistoryMapper;
+        this.userFavoriteMapper = userFavoriteMapper;
+        this.userCommentMapper = userCommentMapper;
     }
 
     @Override
@@ -81,10 +108,30 @@ public class DocServiceImpl extends ServiceImpl<DocMapper, Doc> implements IDocS
     @Override
     @Transactional(rollbackFor = Exception.class)
     public void deleteDoc(Long id) {
-        // 删除文档基础信息
-        this.removeById(id);
-        // 同步删除正文，避免留下无用数据
-        contentMapper.deleteById(id);
+        List<Long> ids = findDocAndChildrenIds(id);
+        if (ids.isEmpty()) {
+            return;
+        }
+
+        // 删除父文档时，必须把所有子文档一起删除，否则阅读目录会出现没有父级的残留文档
+        this.removeBatchByIds(ids);
+        // 同步删除正文，避免 content 表留下无用数据
+        contentMapper.deleteBatchIds(ids);
+        // 删除历史版本，避免版本表指向已经不存在的文档
+        docVersionMapper.delete(new QueryWrapper<DocVersion>().in("doc_id", ids));
+        // 删除点赞记录，避免点赞表指向已经不存在的文档
+        docVoteService.remove(new QueryWrapper<DocVote>().in("doc_id", ids));
+        // 删除阅读历史，避免“我的阅读历史”里继续出现已删除文档
+        readingHistoryMapper.delete(new QueryWrapper<ReadingHistory>().in("doc_id", ids));
+        // 删除文档收藏，避免“我的收藏”里继续出现已删除文档
+        userFavoriteMapper.delete(new QueryWrapper<UserFavorite>()
+                .eq("target_type", "doc")
+                .in("target_id", ids));
+        // 删除文档评论，避免评论表指向已经不存在的文档
+        userCommentMapper.delete(new QueryWrapper<UserComment>()
+                .eq("target_type", "doc")
+                .in("target_id", ids));
+
         ebookMapper.refreshEbookInfo();
     }
 
@@ -94,7 +141,51 @@ public class DocServiceImpl extends ServiceImpl<DocMapper, Doc> implements IDocS
         wrapper.eq("ebook_id", ebookId);
         wrapper.eq("status", "published");
         wrapper.orderByAsc("sort", "id");
-        return this.list(wrapper);
+        return filterOrphanDocs(this.list(wrapper));
+    }
+
+    private List<Long> findDocAndChildrenIds(Long id) {
+        if (id == null || this.getById(id) == null) {
+            return List.of();
+        }
+
+        List<Doc> allDocs = this.list();
+        List<Long> result = new ArrayList<>();
+        collectDocAndChildrenIds(id, allDocs, result);
+        return result;
+    }
+
+    private void collectDocAndChildrenIds(Long id, List<Doc> allDocs, List<Long> result) {
+        result.add(id);
+        for (Doc doc : allDocs) {
+            if (id.equals(doc.getParent())) {
+                collectDocAndChildrenIds(doc.getId(), allDocs, result);
+            }
+        }
+    }
+
+    private List<Doc> filterOrphanDocs(List<Doc> docs) {
+        Map<Long, Doc> docMap = docs.stream()
+                .filter(doc -> doc.getId() != null)
+                .collect(Collectors.toMap(Doc::getId, doc -> doc, (oldValue, newValue) -> oldValue));
+        return docs.stream()
+                .filter(doc -> hasValidParentChain(doc, docMap, new HashSet<>()))
+                .toList();
+    }
+
+    private boolean hasValidParentChain(Doc doc, Map<Long, Doc> docMap, Set<Long> visitedIds) {
+        Long parent = doc.getParent();
+        if (parent == null || parent == 0) {
+            return true;
+        }
+        if (!visitedIds.add(doc.getId())) {
+            return false;
+        }
+        Doc parentDoc = docMap.get(parent);
+        if (parentDoc == null) {
+            return false;
+        }
+        return hasValidParentChain(parentDoc, docMap, visitedIds);
     }
 
     @Override

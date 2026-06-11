@@ -80,4 +80,23 @@ class DocServiceIntegrationTest extends BaseIntegrationTest {
         assertThat(countDocVote(doc.getId(), normalUser.getId())).isEqualTo(1);
         assertThat(countDocVote(doc.getId(), anotherUser.getId())).isEqualTo(1);
     }
+
+    @Test
+    void deleteDocShouldDeleteChildrenTogether() {
+        Doc parent = createDoc(ebook.getId(), "父文档");
+        Doc child = new Doc();
+        child.setEbookId(ebook.getId());
+        child.setParent(parent.getId());
+        child.setName(TEST_PREFIX + "子文档");
+        child.setStatus("published");
+        child.setContent("<p>子文档正文</p>");
+        docService.saveDoc(child);
+
+        docService.deleteDoc(parent.getId());
+
+        assertThat(docService.getById(parent.getId())).isNull();
+        assertThat(docService.getById(child.getId())).isNull();
+        assertThat(contentService.getById(parent.getId())).isNull();
+        assertThat(contentService.getById(child.getId())).isNull();
+    }
 }
