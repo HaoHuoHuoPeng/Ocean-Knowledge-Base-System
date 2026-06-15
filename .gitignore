@@ -41,3 +41,8 @@ Thumbs.db
 /Springboot-demo/
 /Vuedemo-back/
 /Vuedemo-front/
+/Ocean_Knowledge_Base_back/
+/Ocean_Knowledge_Base_front/
+
+# Redis 本地运行目录，不上传可执行文件和本地 dump 数据
+**/Redis/
